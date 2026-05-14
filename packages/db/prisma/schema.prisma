@@ -1,0 +1,485 @@
+// =============================================================================
+// OneAtlas.dev — Prisma Schema
+// Database: Neon (serverless Postgres)
+// ORM: Prisma 5
+//
+// Run:
+//   npx prisma generate          → regenerate client
+//   npx prisma migrate dev       → create & apply migration
+//   npx prisma db push           → push schema without migration (dev only)
+//   npx prisma studio            → open DB browser
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["multiSchema", "relationJoins"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+
+  @@map("user_role")
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+
+  @@map("user_status")
+}
+
+enum OrgPlan {
+  FREE
+  PRO
+  ENTERPRISE
+
+  @@map("org_plan")
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+
+  @@map("org_status")
+}
+
+enum ProjectStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+  DELETED
+
+  @@map("project_status")
+}
+
+enum ProjectType {
+  CRUD_APP
+  DASHBOARD
+  ADMIN_PANEL
+  WORKFLOW_APP
+  CUSTOM
+
+  @@map("project_type")
+}
+
+enum DeploymentStatus {
+  QUEUED
+  BUILDING
+  DEPLOYING
+  LIVE
+  FAILED
+  ROLLED_BACK
+
+  @@map("deployment_status")
+}
+
+enum DeploymentEnv {
+  PREVIEW
+  PRODUCTION
+
+  @@map("deployment_env")
+}
+
+enum WorkflowStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ARCHIVED
+
+  @@map("workflow_status")
+}
+
+enum WorkflowRunStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  TIMED_OUT
+  CANCELLED
+
+  @@map("workflow_run_status")
+}
+
+enum TriggerType {
+  MANUAL
+  SCHEDULE
+  WEBHOOK
+  DATABASE_EVENT
+  FORM_SUBMIT
+  API_CALL
+
+  @@map("trigger_type")
+}
+
+enum IntegrationProvider {
+  SLACK
+  GMAIL
+  GOOGLE_SHEETS
+  GOOGLE_DRIVE
+  NOTION
+  GITHUB
+  JIRA
+  STRIPE
+  ZAPIER
+  WEBHOOK
+  CUSTOM
+
+  @@map("integration_provider")
+}
+
+// =============================================================================
+// USER
+// =============================================================================
+
+model User {
+  id            String     @id @default(cuid())
+  clerkId       String     @unique          // Clerk user ID
+  email         String     @unique
+  emailVerified Boolean    @default(false)
+  name          String?
+  avatarUrl     String?
+  status        UserStatus @default(ACTIVE)
+
+  // Metadata
+  lastActiveAt  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  memberships   OrgMember[]
+  ownedOrgs     Organization[] @relation("OrgOwner")
+  sessions      UserSession[]
+  auditLogs     AuditLog[]
+
+  @@index([email])
+  @@index([clerkId])
+  @@map("users")
+}
+
+model UserSession {
+  id           String   @id @default(cuid())
+  userId       String
+  clerkSession String   @unique
+  ipAddress    String?
+  userAgent    String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_sessions")
+}
+
+// =============================================================================
+// ORGANIZATION
+// =============================================================================
+
+model Organization {
+  id          String    @id @default(cuid())
+  clerkOrgId  String?   @unique          // Clerk org ID (if using Clerk orgs)
+  name        String
+  slug        String    @unique          // used for subdomain: {slug}.oneatlas.app
+  logoUrl     String?
+  plan        OrgPlan   @default(FREE)
+  status      OrgStatus @default(ACTIVE)
+
+  // Limits (overridable per plan)
+  maxApps         Int @default(3)
+  maxWorkflows    Int @default(5)
+  maxMembers      Int @default(5)
+  maxStorageMb    Int @default(500)
+  aiCallsPerMonth Int @default(100)
+
+  // Billing
+  stripeCustomerId     String? @unique
+  stripeSubscriptionId String? @unique
+  planExpiresAt        DateTime?
+
+  // Metadata
+  ownerId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  owner        User          @relation("OrgOwner", fields: [ownerId], references: [id])
+  members      OrgMember[]
+  projects     Project[]
+  integrations Integration[]
+  auditLogs    AuditLog[]
+  apiKeys      ApiKey[]
+
+  @@index([slug])
+  @@index([ownerId])
+  @@map("organizations")
+}
+
+model OrgMember {
+  id     String   @id @default(cuid())
+  orgId  String
+  userId String
+  role   UserRole @default(MEMBER)
+
+  invitedAt  DateTime  @default(now())
+  acceptedAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+  @@index([orgId])
+  @@index([userId])
+  @@map("org_members")
+}
+
+// =============================================================================
+// PROJECT (the generated app)
+// =============================================================================
+
+model Project {
+  id          String        @id @default(cuid())
+  orgId       String
+  name        String
+  slug        String                            // crm, hr-portal, inventory …
+  description String?
+  type        ProjectType   @default(CRUD_APP)
+  status      ProjectStatus @default(DRAFT)
+
+  // The AI prompt used to generate this project
+  prompt      String        @db.Text
+  // AI-generated app metadata (schema, pages, config) stored as JSON
+  metadata    Json          @default("{}")
+
+  // Subdomain: {slug}.oneatlas.app
+  subdomain   String        @unique
+  customDomain String?      @unique
+
+  // Source generated by AI
+  generatedCode Json?        // stores the generated file tree as JSON
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  deployments Deployment[]
+  workflows   Workflow[]
+  envVars     ProjectEnvVar[]
+  auditLogs   AuditLog[]
+
+  @@unique([orgId, slug])
+  @@index([orgId])
+  @@index([subdomain])
+  @@map("projects")
+}
+
+model ProjectEnvVar {
+  id        String  @id @default(cuid())
+  projectId String
+  key       String
+  value     String  // encrypted at rest
+  isSecret  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, key])
+  @@map("project_env_vars")
+}
+
+// =============================================================================
+// DEPLOYMENT
+// =============================================================================
+
+model Deployment {
+  id        String           @id @default(cuid())
+  projectId String
+  version   Int                                  // auto-incremented per project
+  status    DeploymentStatus @default(QUEUED)
+  env       DeploymentEnv    @default(PRODUCTION)
+
+  // Cloudflare Workers deployment info
+  cfDeploymentId String?
+  cfWorkerName   String?
+  deployedUrl    String?
+
+  // Build info
+  buildLog      String?   @db.Text
+  buildDuration Int?      // ms
+  errorMessage  String?   @db.Text
+
+  // Snapshot of generated code at deploy time
+  codeSnapshot  Json?
+
+  triggeredBy   String?   // userId who triggered
+  deployedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, version])
+  @@index([projectId])
+  @@index([status])
+  @@map("deployments")
+}
+
+// =============================================================================
+// WORKFLOW
+// =============================================================================
+
+model Workflow {
+  id          String         @id @default(cuid())
+  projectId   String
+  name        String
+  description String?
+  status      WorkflowStatus @default(DRAFT)
+  triggerType TriggerType    @default(MANUAL)
+
+  // Workflow definition as a node graph (JSON)
+  // Structure: { nodes: WorkflowNode[], edges: WorkflowEdge[] }
+  definition  Json           @default("{\"nodes\":[],\"edges\":[]}")
+
+  // For SCHEDULE triggers
+  cronExpression String?     // e.g. "0 9 * * 1-5"
+  timezone       String?     @default("UTC")
+
+  // For WEBHOOK triggers
+  webhookSecret  String?
+
+  lastRunAt      DateTime?
+  nextRunAt      DateTime?
+  totalRuns      Int        @default(0)
+  successRuns    Int        @default(0)
+  failedRuns     Int        @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project  Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  runs     WorkflowRun[]
+
+  @@index([projectId])
+  @@index([status])
+  @@map("workflows")
+}
+
+model WorkflowRun {
+  id         String            @id @default(cuid())
+  workflowId String
+  status     WorkflowRunStatus @default(PENDING)
+
+  // Execution trace — array of step results
+  trace      Json    @default("[]")
+
+  // Input/output data
+  inputData  Json?
+  outputData Json?
+
+  errorMessage String? @db.Text
+  duration     Int?    // ms
+
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([workflowId])
+  @@index([status])
+  @@map("workflow_runs")
+}
+
+// =============================================================================
+// INTEGRATIONS
+// =============================================================================
+
+model Integration {
+  id       String              @id @default(cuid())
+  orgId    String
+  provider IntegrationProvider
+  name     String              // e.g. "Company Slack"
+
+  // OAuth tokens — encrypted at rest
+  accessToken  String?  @db.Text
+  refreshToken String?  @db.Text
+  tokenExpiry  DateTime?
+
+  // Provider-specific metadata (workspace ID, channel list, etc.)
+  metadata Json @default("{}")
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, provider])
+  @@index([orgId])
+  @@map("integrations")
+}
+
+// =============================================================================
+// API KEYS
+// =============================================================================
+
+model ApiKey {
+  id        String    @id @default(cuid())
+  orgId     String
+  name      String
+  keyHash   String    @unique     // SHA-256 hash — never store plaintext
+  prefix    String                // first 8 chars for display: "oa_live_"
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("api_keys")
+}
+
+// =============================================================================
+// AUDIT LOG
+// =============================================================================
+
+model AuditLog {
+  id        String  @id @default(cuid())
+  orgId     String
+  userId    String?
+  projectId String?
+  action    String          // e.g. "project.created", "deployment.triggered"
+  metadata  Json    @default("{}")
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user    User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  project Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([orgId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
