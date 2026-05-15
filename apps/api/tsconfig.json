@@ -11,6 +11,6 @@
       "@oneatlas/shared": ["../../packages/shared/src/index.ts"]
     }
   },
-  "include": ["src", "next.config.js", "../../packages/db/src", "../../packages/shared/src"],
+  "include": ["src", "next.config.ts", "../../packages/db/src", "../../packages/shared/src"],
   "exclude": ["node_modules"]
 }
