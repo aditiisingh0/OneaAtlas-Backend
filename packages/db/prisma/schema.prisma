@@ -387,6 +387,7 @@ model Workflow {
 model WorkflowRun {
   id         String            @id @default(cuid())
   workflowId String
+  orgId      String
   status     WorkflowRunStatus @default(PENDING)
 
   // Execution trace — array of step results
@@ -406,6 +407,8 @@ model WorkflowRun {
   workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
 
   @@index([workflowId])
+  @@index([orgId])
+  @@index([orgId, status])
   @@index([status])
   @@map("workflow_runs")
 }
@@ -481,5 +484,6 @@ model AuditLog {
   @@index([orgId])
   @@index([userId])
   @@index([createdAt])
+  @@index([orgId, createdAt(sort: Desc)])
   @@map("audit_logs")
 }
