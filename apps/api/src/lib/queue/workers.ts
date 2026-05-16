@@ -27,6 +27,7 @@ import {
   dequeue,
   ack,
   failJob,
+  promoteDelayedJobs,
   type Job,
   type JobType,
   type DeployJob,
@@ -242,6 +243,12 @@ export async function runWorker(
   };
 
   const log = logger.child({ queue: type });
+
+  // Promote any delayed jobs whose backoff window has elapsed
+  const promoted = await promoteDelayedJobs(type);
+  if (promoted > 0) {
+    log.info("worker.delayed.promoted", { count: promoted });
+  }
 
   for (let i = 0; i < batchSize; i++) {
     const job = await dequeue(type);

@@ -10,12 +10,14 @@ import { NextResponse, type NextRequest } from "next/server";
 import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { RATE_LIMITS } from "@oneatlas/shared";
+import { extractBearerToken, verifyApiKey } from "./lib/apiKeys";
 
 // ── Route matchers ────────────────────────────────────────────────────────────
 
 const isPublicRoute = createRouteMatcher([
   "/api/webhooks/(.*)",
   "/api/health",
+  "/api/ready",
 ]);
 
 const isAiRoute = createRouteMatcher([
@@ -114,7 +116,37 @@ export default clerkMiddleware(async (auth, req: NextRequest) => {
     return res;
   }
 
-  // Require valid session for all /api/v1/* routes
+  // ── API Key auth (Bearer oa_live_* / oa_test_*) ───────────────────────────
+  const bearerToken = extractBearerToken(req.headers.get("authorization"));
+  if (bearerToken?.startsWith("oa_")) {
+    try {
+      const apiKeyAuth = await verifyApiKey(bearerToken);
+      // Attach resolved identity to headers so route handlers can read it
+      requestHeaders.set("x-api-key-user-id", apiKeyAuth.userId);
+      requestHeaders.set("x-api-key-org-id", apiKeyAuth.orgId);
+      requestHeaders.set("x-auth-type", "api-key");
+
+      log({
+        requestId,
+        method: req.method,
+        path: req.nextUrl.pathname,
+        authType: "api-key",
+        orgId: apiKeyAuth.orgId,
+        latencyMs: Date.now() - startMs,
+      });
+
+      const res = NextResponse.next({ request: { headers: requestHeaders } });
+      res.headers.set("x-request-id", requestId);
+      return res;
+    } catch {
+      return NextResponse.json(
+        { success: false, error: { code: "UNAUTHORIZED", message: "Invalid API key", status: 401 } },
+        { status: 401 }
+      );
+    }
+  }
+
+  // Require valid Clerk session for all /api/v1/* routes
   const session = await auth();
   if (!session.userId) {
     log({

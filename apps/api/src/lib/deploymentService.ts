@@ -25,6 +25,7 @@ import {
   buildWorkerName,
 } from "./cloudflare";
 import { buildSubdomainUrl } from "./subdomainRouter";
+import { captureDeploymentLive } from "./analytics";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -240,6 +241,16 @@ export async function runDeployment(
         version: deployment.version,
         buildDurationMs: buildDuration,
       },
+    });
+
+    captureDeploymentLive({
+      distinctId: triggeredByUserId,
+      orgId: project.orgId,
+      projectId: project.id,
+      deploymentId,
+      deployedUrl,
+      version: deployment.version,
+      env: deployment.env,
     });
 
     return {

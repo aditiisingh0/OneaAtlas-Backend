@@ -184,7 +184,42 @@ export async function ack(type: JobType, job: Job): Promise<void> {
   await redis.expire(jobMetaKey(job.id), 86400);
 }
 
+// ── Delayed retry queue key ───────────────────────────────────────────────────
+
+export function delayedKey(type: JobType): string {
+  return `${QUEUE_PREFIX}:${type}:delayed`;
+}
+
+// ── Promote due delayed jobs back to main queue ───────────────────────────────
+
+/**
+ * Call this at the start of each worker tick.
+ * Moves any delayed jobs whose score (= run-at timestamp) <= now
+ * back into the main queue so they get picked up.
+ */
+export async function promoteDelayedJobs(type: JobType): Promise<number> {
+  const redis = getRedis();
+  const now = Date.now();
+
+  // ZRANGEBYSCORE: get all members with score <= now
+  const due = await redis.zrangebyscore(delayedKey(type), 0, now);
+  if (!due || due.length === 0) return 0;
+
+  for (const raw of due) {
+    const serialized = typeof raw === "string" ? raw : JSON.stringify(raw);
+    await redis.lpush(queueKey(type), serialized);
+    await redis.zrem(delayedKey(type), raw as string);
+  }
+
+  return due.length;
+}
+
 // ── Fail / retry / dead-letter ────────────────────────────────────────────────
+
+// Backoff: 30s * 2^attempt — capped at 10 min
+function backoffMs(attempt: number): number {
+  return Math.min(30_000 * Math.pow(2, attempt - 1), 600_000);
+}
 
 export async function failJob(
   type: JobType,
@@ -194,18 +229,27 @@ export async function failJob(
   const redis = getRedis();
   const serialized = JSON.stringify(job);
 
-  // Remove from processing
+  // Remove from processing list
   await redis.lrem(processingKey(type), 1, serialized);
 
   if (job.attempts < job.maxRetries) {
-    // Re-enqueue with incremented attempts — exponential backoff via delayed re-push
+    // Re-enqueue into delayed sorted set with score = runAt timestamp
+    const delay = backoffMs(job.attempts);
+    const runAt = Date.now() + delay;
     const retried = { ...job, attempts: job.attempts };
-    await redis.lpush(queueKey(type), JSON.stringify(retried));
+
+    // ZADD delayedKey score member — score is the Unix ms timestamp to run at
+    await redis.zadd(delayedKey(type), {
+      score: runAt,
+      member: JSON.stringify(retried),
+    });
 
     await redis.hset(jobMetaKey(job.id), {
       status: "retrying",
       lastError: errorMessage,
       attempts: String(job.attempts),
+      retryAt: new Date(runAt).toISOString(),
+      retryDelayMs: String(delay),
     });
 
     return "retried";

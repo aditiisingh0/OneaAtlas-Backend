@@ -20,6 +20,7 @@ import {
 import { requireOrgMember } from "../../../../../../../lib/auth";
 import { ok, created, errorResponse } from "../../../../../../../lib/response";
 import { createAuditLog } from "@oneatlas/db";
+import { captureProjectCreated } from "../../../../../../../lib/analytics";
 
 interface RouteContext {
   params: { orgId: string };
@@ -125,6 +126,15 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
       projectId: project.id,
       action: "project.created",
       metadata: { name: project.name, slug: project.slug, type: project.type },
+    });
+
+    captureProjectCreated({
+      distinctId: auth.userId,
+      orgId: params.orgId,
+      projectId: project.id,
+      projectName: project.name,
+      projectType: project.type,
+      plan: org.plan,
     });
 
     return created({

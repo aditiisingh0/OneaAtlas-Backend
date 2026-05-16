@@ -15,12 +15,13 @@ import { z } from "zod";
 import {
   NotFoundError,
   ConflictError,
-  AI_MODELS,
   RATE_LIMITS,
 } from "@oneatlas/shared";
+import { gateway } from "@oneatlas/ai";
 import { requireOrgMember } from "../../../../../../../../../lib/auth";
 import { errorResponse, ok } from "../../../../../../../../../lib/response";
 import { createAuditLog } from "@oneatlas/db";
+import { captureGenerationCompleted } from "../../../../../../../../../lib/analytics";
 
 interface RouteContext {
   params: { orgId: string; projectId: string };
@@ -137,12 +138,6 @@ export async function POST(req: NextRequest, { params }: RouteContext) {
         try {
           send("status", { step: "init", message: "Starting AI generation…" });
 
-          // ── Call Anthropic (streaming) ──────────────────────────────────────
-          const model =
-            body.model === "FAST"
-              ? AI_MODELS.FAST.anthropic
-              : AI_MODELS.SMART.anthropic;
-
           const systemPrompt = `You are OneAtlas, an expert full-stack code generator.
 Generate a complete, production-ready web application based on the user's prompt.
 
@@ -156,44 +151,17 @@ Respond ONLY with a JSON object matching this schema — no markdown, no explana
 
           send("status", { step: "ai", message: "Calling AI model…" });
 
-          const aiResponse = await fetch(
-            "https://api.anthropic.com/v1/messages",
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "x-api-key": process.env.ANTHROPIC_API_KEY ?? "",
-                "anthropic-version": "2023-06-01",
-              },
-              body: JSON.stringify({
-                model,
-                max_tokens: 8000,
-                system: systemPrompt,
-                messages: [{ role: "user", content: body.prompt }],
-              }),
-            }
-          );
-
-          if (!aiResponse.ok) {
-            const err = await aiResponse.text();
-            throw new Error(`AI API error: ${aiResponse.status} — ${err}`);
-          }
-
-          const aiData = await aiResponse.json();
-          const rawContent = aiData.content?.[0]?.text ?? "{}";
+          const aiResult = await gateway.completeJson<Record<string, unknown>>({
+            tier: body.model === "FAST" ? "fast" : "smart",
+            systemPrompt,
+            messages: [{ role: "user", content: body.prompt }],
+            jsonMode: true,
+            maxTokens: 8000,
+          });
 
           send("status", { step: "parsing", message: "Parsing generated code…" });
 
-          let generatedCode: Record<string, unknown>;
-          try {
-            const clean = rawContent
-              .replace(/```json\n?/g, "")
-              .replace(/```\n?/g, "")
-              .trim();
-            generatedCode = JSON.parse(clean);
-          } catch {
-            throw new Error("AI returned malformed JSON. Try again.");
-          }
+          const generatedCode = aiResult.data;
 
           send("status", { step: "saving", message: "Saving to database…" });
 
@@ -223,11 +191,23 @@ Respond ONLY with a JSON object matching this schema — no markdown, no explana
             projectId: params.projectId,
             action: "project.generation.completed",
             metadata: {
-              model,
-              pageCount: (
-                generatedCode.pages as unknown[]
-              )?.length ?? 0,
+              model: aiResult.model,
+              provider: aiResult.provider,
+              pageCount: (generatedCode.pages as unknown[])?.length ?? 0,
             },
+          });
+
+          captureGenerationCompleted({
+            distinctId: auth.userId,
+            orgId: params.orgId,
+            projectId: params.projectId,
+            model: aiResult.model,
+            provider: aiResult.provider,
+            cached: aiResult.cached,
+            latencyMs: aiResult.latencyMs,
+            pageCount: (generatedCode.pages as unknown[])?.length ?? 0,
+            apiRouteCount: (generatedCode.apiRoutes as unknown[])?.length ?? 0,
+            tier: body.model === "FAST" ? "fast" : "smart",
           });
 
           send("done", {
