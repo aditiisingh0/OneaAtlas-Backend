@@ -2,15 +2,39 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM"],
+    "lib": [
+      "ES2022",
+      "DOM"
+    ],
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "plugins": [{ "name": "next" }],
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
     "paths": {
-      "@oneatlas/db": ["../../packages/db/src/index.ts"],
-      "@oneatlas/shared": ["../../packages/shared/src/index.ts"]
-    }
+      "@oneatlas/db": [
+        "../../packages/db/src/index.ts"
+      ],
+      "@oneatlas/shared": [
+        "../../packages/shared/src/index.ts"
+      ]
+    },
+    "allowJs": true,
+    "noEmit": true,
+    "incremental": true,
+    "isolatedModules": true,
+    "jsx": "preserve"
   },
-  "include": ["src", "next.config.ts", "../../packages/db/src", "../../packages/shared/src"],
-  "exclude": ["node_modules"]
+  "include": [
+    "src",
+    "next.config.ts",
+    "../../packages/db/src",
+    "../../packages/shared/src",
+    ".next/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
 }
